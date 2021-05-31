@@ -1,18 +1,31 @@
 """Checks the public API page at dev/api for changes"""
 import argparse
+import io
 import time
 from copy import copy
 from datetime import datetime
-from json import dump, load
-from os import mkdir
+from difflib import unified_diff
+from json import dump, load, loads, dumps
+from os import listdir, mkdir
 from os.path import isdir, isfile, join
 
-import requests
+import discord
 import tabulate
 from BotUtils import BotServices
 from bs4 import BeautifulSoup, NavigableString, Tag
 from praw.endpoints import API_PATH
+from github import Github, InputFileContent
 
+from config import github_token, webhook
+
+import requests
+from discord import Webhook, RequestsWebhookAdapter, File
+
+webhook = Webhook.partial(*webhook, adapter=RequestsWebhookAdapter())
+
+
+g = Github(github_token)
+gist = g.get_gist('28f68ce32bca9a8f6aa1da1c52e1e72a')
 
 services = BotServices('RedditAPIChecker')
 reddit = services.reddit('Lil_SpazBot')
@@ -112,7 +125,7 @@ def main():
     parser = argparse.ArgumentParser(description='Check dev/api endpoints for changes')
     parser.add_argument('-o', '--output', action='store', help='File to write endpoints to.', default='endpoints.json')
     parser.add_argument('-c', '--check', action='store_true', help='Check if there are any changes,', default=True)
-    parser.add_argument('-e', '--existing', action='store', help='File to existing endpoints', default='endpoints.json')
+    parser.add_argument('-e', '--existing', action='store', help='File to existing endpoints')
     parser.add_argument('-p', '--print', action='store_true', help='Print endpoints not in PRAW', default=False)
     parser.add_argument('-d', '--changes-dir', action='store', help='Dir to store changes', default='changes')
     args = parser.parse_args()
@@ -122,39 +135,61 @@ def main():
     printDiff = args.print
     changesDir = args.changes_dir
     changes = False
+    file = None
     try:
-        if not isfile(existingEndpoints):
-            with open(existingEndpoints, 'w') as f:
-                dump({}, f)
-        with open(existingEndpoints) as f:
-            existing = load(f)
+        if existingEndpoints and isfile(existingEndpoints):
+            with open(existingEndpoints) as f:
+                old_api = f.read()
+                existing = loads(old_api)
+        else:
+            old_api = gist.files['API.json'].content
+            existing = loads(old_api)
         parsed = parseEndpoints()
+        current_api = dumps(parsed, indent=4)
         if check:
             if existing != parsed:
                 changes = True
                 if not isdir(changesDir):
                     mkdir(changesDir)
                 currentChangesDir = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+                revisions = listdir(changesDir)
+                revisions.sort()
                 mkdir(join(changesDir, currentChangesDir))
+                if len(revisions) > 1:
+                    previous_revision = revisions[-1]
                 with open(join(changesDir, currentChangesDir, 'oldEndpoints.json'), 'w') as f:
                     dump(existing, f, indent=4)
+                with open(join(changesDir, currentChangesDir, 'oldEndpoints.json'), 'r') as f:
+                    old = f.readlines()
+
                 with open(join(changesDir, currentChangesDir, 'newEndpoints.json'), 'w') as f:
-                    dump(parsed, f, indent=4)
+                    f.write(current_api)
+                with open(join(changesDir, currentChangesDir, 'newEndpoints.json'), 'r') as f:
+                    new = f.readlines()
+
                 log.info('Changes were detected!')
+                diff_string = ''.join(list(unified_diff(old, new, fromfile=f'API_{previous_revision}.json', tofile=f'API_{currentChangesDir}.json')))
+                diff_file = io.BytesIO(diff_string.encode())
+                diff_file.seek(0)
+                gist.edit(files={'API.json': InputFileContent(current_api), 'changes.diff': InputFileContent(diff_string)})
+                file = File(diff_file, f"API_{currentChangesDir}.diff")
         if outputFilename:
             with open(outputFilename, 'w') as f:
-                dump(parsed, f, indent=4)
+                f.write(current_api)
         if printDiff:
             printEndpointsNotInPRAW(parsed)
     except Exception as error:
         log.exception(error)
-    return changes
+    return changes, file
 
 if __name__ == '__main__':
     log.info('Checking Reddit API...')
-    if main():
+    changes, file = main()
+    if changes:
         log.info('Change detected')
-        thread.reply('Change detected')
+        embed = discord.Embed(title='Changes Detected', description=datetime.now().strftime('%Y-%m-%d_%H-%M-%S'))
+        embed.add_field(name='Gist', value='[API.json](https://gist.github.com/LilSpazJoekp/28f68ce32bca9a8f6aa1da1c52e1e72a/revisions?diff=split)')
+        webhook.send("<@393801572858986496>", embed=embed, username='Reddit API Changes', file=file)
     else:
         log.info('No change detected')
     time.sleep(43230)

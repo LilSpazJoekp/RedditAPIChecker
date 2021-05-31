@@ -5,3 +5,5 @@ lxml
 praw
 BotUtils
 tabulate
+PyGithub
+discord.py
