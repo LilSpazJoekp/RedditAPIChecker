@@ -30,7 +30,6 @@ gist = g.get_gist('28f68ce32bca9a8f6aa1da1c52e1e72a')
 services = BotServices('RedditAPIChecker')
 reddit = services.reddit('Lil_SpazBot')
 log = services.logger()
-thread = reddit.inbox.message('v47hov')
 
 def parseEndpoints():
     url = 'https://www.reddit.com/dev/api'
